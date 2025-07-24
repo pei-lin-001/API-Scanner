@@ -17,11 +17,12 @@ import sqlite3
 import sys
 import time
 from datetime import date
+from typing import Optional
 
 from selenium.common.exceptions import UnableToSetCookieException
 from selenium.webdriver.common.by import By
 
-LOGGER_NAME = "ChatGPT-API-Leakage"
+LOGGER_NAME = "API-Scanner"
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt="[%X]")
 logger = logging.getLogger(LOGGER_NAME)
@@ -153,17 +154,19 @@ class CookieManager:
 
 class DatabaseManager:
     """
-    This class is used to manage the database, including creating tables and handling data interactions.
+    This class is used to manage vendor-specific databases, including creating tables and handling data interactions.
     """
 
-    def __init__(self, db_filename: str):
+    def __init__(self, db_filename: str, vendor_name: Optional[str] = None):
         """
         Initialize the DatabaseManager with the specified database filename.
 
         Args:
             db_filename (str): Path to the SQLite database file.
+            vendor_name (str, optional): Name of the vendor for logging purposes.
         """
         self.db_filename = db_filename
+        self.vendor_name = vendor_name or "Unknown"
         self.con = None
         self.cur = None
 
@@ -172,19 +175,19 @@ class DatabaseManager:
         Enter the runtime context related to this object, initializing the database if needed.
         """
         if not os.path.exists(self.db_filename):
-            logging.info("Creating database github.db")
+            logging.info(f"Creating database {self.db_filename} for {self.vendor_name}")
 
         self.con = sqlite3.connect(self.db_filename)
         self.cur = self.con.cursor()
 
         self.cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='APIKeys'")
         if self.cur.fetchone() is None:
-            logging.info("Creating table APIKeys")
+            logging.info(f"Creating table APIKeys in {self.vendor_name} database")
             self.cur.execute("CREATE TABLE APIKeys(apiKey, status, lastChecked)")
 
         self.cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='URLs'")
         if self.cur.fetchone() is None:
-            logging.info("Creating table URLs")
+            logging.info(f"Creating table URLs in {self.vendor_name} database")
             self.cur.execute("CREATE TABLE URLs(url, key)")
 
         return self
@@ -218,6 +221,18 @@ class DatabaseManager:
         if self.cur is None:
             raise ValueError("Cursor is not initialized")
         self.cur.execute("SELECT apiKey FROM APIKeys WHERE status='yes'")
+        return self.cur.fetchall()
+
+    def all_unavailable_keys(self) -> list:
+        """
+        Get all keys with a status other than 'yes'.
+
+        Returns:
+            list: A list of tuples containing API keys.
+        """
+        if self.cur is None:
+            raise ValueError("Cursor is not initialized")
+        self.cur.execute("SELECT apiKey FROM APIKeys WHERE status != 'yes'")
         return self.cur.fetchall()
 
     def deduplicate(self) -> None:
@@ -307,3 +322,64 @@ class DatabaseManager:
         self.cur.execute("SELECT key FROM URLs WHERE url=?", (url,))
         fetch = self.cur.fetchone()
         return fetch[0] if fetch else None
+
+    def get_keys_by_status(self, status_list: list) -> list:
+        """
+        获取指定状态的密钥
+        
+        Args:
+            status_list: 状态列表
+            
+        Returns:
+            list: 匹配的密钥列表
+        """
+        placeholders = ','.join('?' * len(status_list))
+        query = f"SELECT apiKey, status, lastChecked FROM APIKeys WHERE status IN ({placeholders})"
+        
+        result = self.cur.execute(query, status_list).fetchall()
+        logger.info(f"📋 Found {len(result)} keys with status in {status_list}")
+        return result
+    
+    def update_key_status(self, api_key: str, new_status: str) -> bool:
+        """
+        更新密钥状态
+        
+        Args:
+            api_key: API密钥
+            new_status: 新状态
+            
+        Returns:
+            bool: 是否更新成功
+        """
+        try:
+            self.cur.execute(
+                "UPDATE APIKeys SET status = ?, lastChecked = CURRENT_TIMESTAMP WHERE apiKey = ?",
+                (new_status, api_key)
+            )
+            
+            if self.cur.rowcount > 0:
+                logger.info(f"✅ Updated key {api_key[:10]}... status to {new_status}")
+                return True
+            else:
+                logger.warning(f"⚠️ Key {api_key[:10]}... not found for status update")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to update key status: {e}")
+            return False
+    
+    def get_status_summary(self) -> dict:
+        """
+        获取状态统计摘要
+        
+        Returns:
+            dict: 各状态的密钥数量
+        """
+        query = "SELECT status, COUNT(*) as count FROM APIKeys GROUP BY status"
+        result = self.cur.execute(query).fetchall()
+        
+        summary = {}
+        for row in result:
+            summary[row[0]] = row[1]
+        
+        return summary

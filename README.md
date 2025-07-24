@@ -1,6 +1,6 @@
-# ChatGPT-API-Scanner
+# Gemini-API-Scanner
 
-This tool scans GitHub for available OpenAI API Keys.
+This tool scans GitHub for available Gemini API Keys.
 
 ![Result Demo 1](pics/demo.png)
 
@@ -22,11 +22,7 @@ This tool scans GitHub for available OpenAI API Keys.
 
 It's important to keep it safe to prevent unauthorized access. Here are some useful resources:
 
-- [Best Practices for API Key Safety](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety)
-
-- [My API is getting leaked.. need advice!](https://community.openai.com/t/my-api-is-getting-leaked-need-advice/280564)
-
-- [My OpenAI API Key Leaked! What Should I Do?](https://www.gitguardian.com/remediation/openai-key)
+- [Best practices for using API keys](https://cloud.google.com/docs/authentication/api-keys)
 
 ## Prerequisites
 
@@ -42,15 +38,15 @@ Ensure you have the following installed on your system:
 1. Clone the repository:
 
     ```bash
-    git clone https://github.com/Junyi-99/ChatGPT-API-Leakage
+    git clone https://github.com/Junyi-99/Gemini-API-Leakage
 
-    cd ChatGPT-API-Leakage
+    cd Gemini-API-Leakage
     ```
 
 2. Install required pypi packages
 
     ```bash
-    pip install selenium tqdm openai rich
+    pip install selenium tqdm google-generativeai rich
     ```
 
 ## Usage
@@ -63,7 +59,7 @@ Ensure you have the following installed on your system:
 
 2. You will be prompted to log in to your GitHub account in the browser. Please do so.
 
-That's it! The script will now scan GitHub for available OpenAI API Keys.
+That's it! The script will now scan GitHub for available Gemini API Keys.
 
 ## Command Line Arguments
 
@@ -87,7 +83,7 @@ python3 src/main.py --from-iter 100
 python3 src/main.py --check-existed-keys-only
 
 # Use custom keywords and languages
-python3 src/main.py -k "openai" "chatgpt" -l python javascript
+python3 src/main.py -k "gemini" "google ai" -l python javascript
 ```
 
 ## Results
@@ -126,7 +122,7 @@ A: The web-based search only provides the first 5 pages of results. There are ma
 
 **Q: Why don't you use multithreading?**
 
-A: Because GitHub searches and OpenAI are rate-limited. Using multithreading does not significantly increase efficiency.
+A: Because GitHub searches and Google's services are rate-limited. Using multithreading does not significantly increase efficiency.
 
 **Q: Why is the API Key provided in your repository not working?**
 

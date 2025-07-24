@@ -1,11 +1,23 @@
 """
-This module is used to store the configurations.
+Configuration module for Multi-Vendor API Key Scanner
+
+This module is now deprecated as configurations are moved to individual vendor modules.
+Each vendor (OpenAI, Gemini, SiliconFlow) now defines its own:
+- Regex patterns for API key detection
+- Search keywords 
+- Validation methods
+- Database configurations
+
+For vendor-specific configurations, see:
+- src/vendors/openai/vendor.py
+- src/vendors/gemini/vendor.py  
+- src/vendors/silicon_flow/vendor.py
 """
 
-import re
+# Legacy configurations - kept for reference
+# These are no longer used in the main application
 
-# Keywords are not enabled by current version.
-KEYWORDS = [
+LEGACY_KEYWORDS = [
     "CoT",
     "DPO",
     "RLHF",
@@ -13,11 +25,14 @@ KEYWORDS = [
     "ai model",
     "aios",
     "api key",
+    "api-key",
     "apikey",
     "artificial intelligence",
+    "auth_token",
+    "authorization",
     "chain of thought",
     "chatbot",
-    "chatgpt",
+    "client_secret",
     "competitor analysis",
     "content strategy",
     "conversational AI",
@@ -25,10 +40,9 @@ KEYWORDS = [
     "deep learning",
     "direct preference optimization",
     "experiment",
-    "gpt",
-    "gpt-3",
-    "gpt-4",
-    "gpt4",
+    "gemini",
+    "google ai",
+    "google-api-key",
     "key",
     "keyword clustering",
     "keyword research",
@@ -41,16 +55,18 @@ KEYWORDS = [
     "machine learning",
     "multi-agent",
     "multi-agent systems",
+    "my-secret-key",
     "natural language processing",
-    "openai",
     "personalized AI",
     "project",
     "rag",
     "reinforcement learning from human feedback",
     "retrieval-augmented generation",
     "search intent",
+    "secret key",
     "semantic search",
     "thoughts",
+    "token",
     "virtual assistant",
     "实验",
     "密钥",
@@ -58,7 +74,7 @@ KEYWORDS = [
     "语言模型",
 ]
 
-LANGUAGES = [
+LEGACY_LANGUAGES = [
     "Dotenv",
     "Text",
     "JavaScript",
@@ -72,23 +88,30 @@ LANGUAGES = [
     "Go",
     "C%2B%2B",
     "PHP",
+    "Ruby",
+    "C#",
+    "Rust",
+    "Kotlin",
+    "Swift",
+    "YAML",
+    "JSON",
 ]
 
-PATHS = [
+LEGACY_PATHS = [
     "path:.xml OR path:.json OR path:.properties OR path:.sql OR path:.txt OR path:.log OR path:.tmp OR path:.backup OR path:.bak OR path:.enc",
     "path:.yml OR path:.yaml OR path:.toml OR path:.ini OR path:.config OR path:.conf OR path:.cfg OR path:.env OR path:.envrc OR path:.prod",
     "path:.secret OR path:.private OR path:*.key",
 ]
 
-# regex, have_many_results, result_too_lang
-REGEX_LIST = [
-    # Named Project API Key (no matter normal or restricted) still valid until Dec 2, 2024
-    (re.compile(r"sk-proj-[A-Za-z0-9-_]{74}T3BlbkFJ[A-Za-z0-9-_]{73}A"), True, True),
-    # Old Project API Key
-    (re.compile(r"sk-proj-[A-Za-z0-9-_]{58}T3BlbkFJ[A-Za-z0-9-_]{58}"), True, True),
-    # Service Account Key
-    (re.compile(r"sk-svcacct-[A-Za-z0-9-_]\+T3BlbkFJ[A-Za-z0-9-_]+"), False, False),
-    (re.compile(r"sk-proj-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}"), True, False),
-    # Old key format (deprecated by OpenAI)
-    (re.compile(r"sk-[a-zA-Z0-9]{48}"), True, False),
+# Legacy regex patterns - now moved to vendor modules
+import re
+LEGACY_REGEX_LIST = [
+    # Gemini API Key (now in vendors/gemini/vendor.py)
+    (re.compile(r"AIzaSy[A-Za-z0-9_-]{33}"), True, False),
 ]
+
+# Backward compatibility exports (deprecated)
+KEYWORDS = LEGACY_KEYWORDS
+LANGUAGES = LEGACY_LANGUAGES  
+PATHS = LEGACY_PATHS
+REGEX_LIST = LEGACY_REGEX_LIST

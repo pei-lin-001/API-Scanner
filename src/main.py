@@ -1,5 +1,6 @@
 """
-Scan GitHub for available OpenAI API Keys
+Multi-Vendor API Key Scanner for GitHub
+Supports OpenAI, Gemini, and SiliconFlow API keys
 """
 
 import argparse
@@ -7,6 +8,7 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import List
 
 import rich
 from selenium import webdriver
@@ -15,43 +17,114 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from configs import KEYWORDS, LANGUAGES, PATHS, REGEX_LIST
 from manager import CookieManager, DatabaseManager, ProgressManager
-from utils import check_key
+from utils import check_key_with_vendor
+from vendor_factory import VendorFactory
+from vendors.base import BaseVendor
 
 FORMAT = "%(message)s"
 logging.basicConfig(level=logging.INFO, format=FORMAT, datefmt="[%X]")
-log = logging.getLogger("ChatGPT-API-Leakage")
+log = logging.getLogger("API-Scanner")
 httpx_logger = logging.getLogger("httpx")
 httpx_logger.setLevel(logging.WARNING)
 
 
-class APIKeyLeakageScanner:
+class MultiVendorAPIKeyScanner:
     """
-    Scan GitHub for available OpenAI API Keys
+    Multi-vendor API Key Scanner for GitHub
     """
 
-    def __init__(self, db_file: str, keywords: list, languages: list):
-        self.db_file = db_file
+    def __init__(self, vendors: List[BaseVendor]):
+        self.vendors = vendors
         self.driver: webdriver.Chrome | None = None
         self.cookies: CookieManager | None = None
-        rich.print(f"📂 Opening database file {self.db_file}")
-
-        self.dbmgr = DatabaseManager(self.db_file)
-
-        self.keywords = keywords
-        self.languages = languages
+        
+        # Initialize database managers for each vendor
+        self.dbmgrs = {}
+        for vendor in vendors:
+            self.dbmgrs[vendor.name] = DatabaseManager(
+                vendor.get_database_filename(), 
+                vendor.name
+            )
+        
+        # Build candidate URLs for all vendors
         self.candidate_urls = []
-        for regex, too_many_results, _ in REGEX_LIST:
-            # Add the paths to the search query
-            for path in PATHS:
-                self.candidate_urls.append(f"https://github.com/search?q=(/{regex.pattern}/)+AND+({path})&type=code&ref=advsearch")
+        self._build_search_urls()
 
-            for language in self.languages:
-                if too_many_results:  # if the regex is too many results, then we need to add AND condition
-                    self.candidate_urls.append(f"https://github.com/search?q=(/{regex.pattern}/)+language:{language}&type=code&ref=advsearch")
-                else:  # if the regex is not too many results, then we just need the regex
-                    self.candidate_urls.append(f"https://github.com/search?q=(/{regex.pattern}/)&type=code&ref=advsearch")
+    def _build_search_urls(self):
+        """
+        Build search URLs for all vendors using enhanced search configuration
+        """
+        # Import enhanced search configuration
+        from search_config import get_comprehensive_search_config
+        
+        search_config = get_comprehensive_search_config()
+        
+        # Enhanced paths to search in - comprehensive coverage
+        PATHS = search_config["paths"]
+        
+        # Enhanced languages - maximum coverage
+        LANGUAGES = search_config["languages"]
+        
+        # Additional search patterns for specific filenames
+        FILENAME_PATTERNS = [
+            f"filename:{filename}" for filename in search_config["filenames"]
+        ]
+        
+        for vendor in self.vendors:
+            rich.print(f"🔍 Building search URLs for [bold]{vendor.name}[/bold]")
+            
+            for regex, too_many_results, _ in vendor.regex_patterns:
+                # Strategy 1: Search in specific file paths
+                for path in PATHS:
+                    self.candidate_urls.append({
+                        'url': f"https://github.com/search?q=(/{regex.pattern}/)+AND+({path})&type=code&ref=advsearch",
+                        'vendor': vendor
+                    })
+
+                # Strategy 2: Search by programming languages
+                for language in LANGUAGES:
+                    if too_many_results:  # Use AND condition for high-volume patterns
+                        self.candidate_urls.append({
+                            'url': f"https://github.com/search?q=(/{regex.pattern}/)+language:{language}&type=code&ref=advsearch",
+                            'vendor': vendor
+                        })
+                    else:  # Simple search for low-volume patterns
+                        self.candidate_urls.append({
+                            'url': f"https://github.com/search?q=(/{regex.pattern}/)&type=code&ref=advsearch",
+                            'vendor': vendor
+                        })
+                
+                # Strategy 3: Search in specific filename patterns
+                for filename_pattern in FILENAME_PATTERNS:
+                    self.candidate_urls.append({
+                        'url': f"https://github.com/search?q=(/{regex.pattern}/)+{filename_pattern}&type=code&ref=advsearch",
+                        'vendor': vendor
+                    })
+                
+                # Strategy 4: Combine vendor-specific keywords with regex patterns
+                vendor_keywords = vendor.get_search_keywords()
+                for keyword in vendor_keywords[:10]:  # Limit to top 10 keywords to avoid too many URLs
+                    if too_many_results:
+                        self.candidate_urls.append({
+                            'url': f"https://github.com/search?q=(/{regex.pattern}/)+{keyword}&type=code&ref=advsearch",
+                            'vendor': vendor
+                        })
+                
+                # Strategy 5: Search with code patterns that commonly contain API keys
+                code_patterns = search_config["code_patterns"]
+                for pattern in code_patterns[:5]:  # Limit to avoid overwhelming number of URLs
+                    if "sk-" in pattern or "AIzaSy" in pattern:  # Only use relevant patterns
+                        self.candidate_urls.append({
+                            'url': f"https://github.com/search?q=(/{regex.pattern}/)+\"{pattern}\"&type=code&ref=advsearch",
+                            'vendor': vendor
+                        })
+            
+            rich.print(f"📊 Generated {len([url for url in self.candidate_urls if url['vendor'] == vendor])} search URLs for {vendor.name}")
+        
+        total_urls = len(self.candidate_urls)
+        rich.print(f"🎯 [bold green]Total search URLs generated: {total_urls}[/bold green]")
+        rich.print(f"⏱️  Estimated scan time: {total_urls * 0.5:.1f} minutes (assuming 30s per URL)")
 
     def login_to_github(self):
         """
@@ -62,6 +135,8 @@ class APIKeyLeakageScanner:
         options = webdriver.ChromeOptions()
         options.add_argument("--ignore-certificate-errors")
         options.add_argument("--ignore-ssl-errors")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
 
         self.driver = webdriver.Chrome(options=options)
         self.driver.implicitly_wait(3)
@@ -89,9 +164,9 @@ class APIKeyLeakageScanner:
         for element in elements:
             element.click()
 
-    def _find_urls_and_apis(self) -> tuple[list[str], list[str]]:
+    def _find_urls_and_apis(self, vendor: BaseVendor) -> tuple[list[str], list[str]]:
         """
-        Find all the urls and apis in the current page
+        Find all the URLs and APIs in the current page for a specific vendor
         """
         apis_found = []
         urls_need_expand = []
@@ -99,8 +174,8 @@ class APIKeyLeakageScanner:
         codes = self.driver.find_elements(by=By.CLASS_NAME, value="code-list")  # type: ignore
         for element in codes:
             apis = []
-            # Check all regex for each code block
-            for regex, _, too_long in REGEX_LIST[2:]:
+            # Check all regex for this vendor's patterns
+            for regex, _, too_long in vendor.regex_patterns:
                 if not too_long:
                     apis.extend(regex.findall(element.text))
 
@@ -113,13 +188,17 @@ class APIKeyLeakageScanner:
 
         return apis_found, urls_need_expand
 
-    def _process_url(self, url: str):
+    def _process_url(self, url_data: dict):
         """
-        Process a search query url
+        Process a search query URL for a specific vendor
         """
         if self.driver is None:
             raise ValueError("Driver is not initialized")
 
+        url = url_data['url']
+        vendor = url_data['vendor']
+        
+        rich.print(f"🔍 Processing {vendor.name}: {url[:80]}...")
         self.driver.get(url)
 
         while True:  # Loop until all the pages are processed
@@ -132,25 +211,28 @@ class APIKeyLeakageScanner:
 
             self._expand_all_code()
 
-            apis_found, urls_need_expand = self._find_urls_and_apis()
-            rich.print(f"    🌕 There are {len(urls_need_expand)} urls waiting to be expanded")
+            apis_found, urls_need_expand = self._find_urls_and_apis(vendor)
+            rich.print(f"    🌕 There are {len(urls_need_expand)} URLs waiting to be expanded for {vendor.name}")
 
             try:
                 next_buttons = self.driver.find_elements(by=By.XPATH, value="//a[@aria-label='Next Page']")
-                rich.print("🔍 Clicking next page")
-                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, "//a[@aria-label='Next Page']")))
-                next_buttons = self.driver.find_elements(by=By.XPATH, value="//a[@aria-label='Next Page']")
-                next_buttons[0].click()
+                if next_buttons:
+                    rich.print("🔍 Clicking next page")
+                    WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, "//a[@aria-label='Next Page']")))
+                    next_buttons = self.driver.find_elements(by=By.XPATH, value="//a[@aria-label='Next Page']")
+                    next_buttons[0].click()
+                else:
+                    break
             except Exception:  # pylint: disable=broad-except
                 rich.print("⚪️ No more pages")
                 break
 
         # Handle the expand_urls
-        for u in tqdm(urls_need_expand, desc="🔍 Expanding URLs ..."):
+        for u in tqdm(urls_need_expand, desc=f"🔍 Expanding URLs for {vendor.name} ..."):
             if self.driver is None:
                 raise ValueError("Driver is not initialized")
 
-            with self.dbmgr as mgr:
+            with self.dbmgrs[vendor.name] as mgr:
                 if mgr.get_url(u):
                     rich.print(f"    🔑 skipping url '{u[:10]}...{u[-10:]}'")
                     continue
@@ -161,7 +243,7 @@ class APIKeyLeakageScanner:
             retry = 0
             while retry <= 3:
                 matches = []
-                for regex, _, _ in REGEX_LIST:
+                for regex, _, _ in vendor.regex_patterns:
                     matches.extend(regex.findall(self.driver.page_source))
                 matches = list(set(matches))
 
@@ -171,7 +253,7 @@ class APIKeyLeakageScanner:
                     time.sleep(3)
                     continue
 
-                with self.dbmgr as mgr:
+                with self.dbmgrs[vendor.name] as mgr:
                     new_apis = [api for api in matches if not mgr.key_exists(api)]
                     new_apis = list(set(new_apis))
                 apis_found.extend(new_apis)
@@ -179,23 +261,26 @@ class APIKeyLeakageScanner:
                 for match in matches:
                     rich.print(f"        '{match[:10]}...{match[-10:]}'")
 
-                with self.dbmgr as mgr:
-                    mgr.insert_url(url)
+                with self.dbmgrs[vendor.name] as mgr:
+                    mgr.insert_url(u)
                 break
 
-        self.check_api_keys_and_save(apis_found)
+        self.check_api_keys_and_save(vendor, apis_found)
 
-    def check_api_keys_and_save(self, keys: list[str]):
+    def check_api_keys_and_save(self, vendor: BaseVendor, keys: list[str]):
         """
-        Check a list of API keys
+        Check a list of API keys for a specific vendor
         """
-        with self.dbmgr as mgr:
+        with self.dbmgrs[vendor.name] as mgr:
             unique_keys = list(set(keys))
             unique_keys = [api for api in unique_keys if not mgr.key_exists(api)]
 
+        def check_single_key(key):
+            return check_key_with_vendor(vendor, key)
+
         with ThreadPoolExecutor(max_workers=10) as executor:
-            results = list(executor.map(check_key, unique_keys))
-            with self.dbmgr as mgr:
+            results = list(executor.map(check_single_key, unique_keys))
+            with self.dbmgrs[vendor.name] as mgr:
                 for idx, result in enumerate(results):
                     mgr.insert(unique_keys[idx], result)
 
@@ -213,88 +298,119 @@ class APIKeyLeakageScanner:
         if from_iter is None:
             from_iter = progress.load(total=total)
 
-        for idx, url in enumerate(self.candidate_urls):
+        for idx, url_data in enumerate(self.candidate_urls):
             if idx < from_iter:
                 pbar.update()
                 time.sleep(0.05)  # let tqdm print the bar
-                log.debug("⚪️ Skip %s", url)
+                log.debug("⚪️ Skip %s", url_data['url'])
                 continue
-            self._process_url(url)
+            self._process_url(url_data)
             progress.save(idx, total)
-            log.debug("🔍 Finished %s", url)
+            log.debug("🔍 Finished %s", url_data['url'])
             pbar.update()
         pbar.close()
 
     def deduplication(self):
         """
-        Deduplicate the database
+        Deduplicate all vendor databases
         """
-        with self.dbmgr as mgr:
-            mgr.deduplicate()
+        for vendor in self.vendors:
+            with self.dbmgrs[vendor.name] as mgr:
+                mgr.deduplicate()
 
     def update_existed_keys(self):
         """
-        Update previously checked API keys in the database with their current status
+        Update previously checked API keys in all vendor databases
         """
-        with self.dbmgr as mgr:
-            rich.print("🔄 Updating existed keys")
-            keys = mgr.all_keys()
-            for key in tqdm(keys, desc="🔄 Updating existed keys ..."):
-                result = check_key(key[0])
-                mgr.delete(key[0])
-                mgr.insert(key[0], result)
+        for vendor in self.vendors:
+            with self.dbmgrs[vendor.name] as mgr:
+                rich.print(f"🔄 Updating existed keys for {vendor.name}")
+                keys = mgr.all_keys()
+                for key in tqdm(keys, desc=f"🔄 Updating {vendor.name} keys ..."):
+                    result = check_key_with_vendor(vendor, key[0])
+                    mgr.delete(key[0])
+                    mgr.insert(key[0], result)
 
     def update_iq_keys(self):
         """
-        Update insuffcient quota keys
+        Update insufficient quota keys for all vendors
         """
-        with self.dbmgr as mgr:
-            rich.print("🔄 Updating insuffcient quota keys")
-            keys = mgr.all_iq_keys()
-            for key in tqdm(keys, desc="🔄 Updating insuffcient quota keys ..."):
-                result = check_key(key[0])
-                mgr.delete(key[0])
-                mgr.insert(key[0], result)
+        for vendor in self.vendors:
+            with self.dbmgrs[vendor.name] as mgr:
+                rich.print(f"🔄 Updating insufficient quota keys for {vendor.name}")
+                keys = mgr.all_iq_keys()
+                for key in tqdm(keys, desc=f"🔄 Updating {vendor.name} insufficient quota keys ..."):
+                    result = check_key_with_vendor(vendor, key[0])
+                    mgr.delete(key[0])
+                    mgr.insert(key[0], result)
 
-    def all_available_keys(self) -> list:
+    def get_all_available_keys(self) -> dict:
         """
-        Get all available keys
+        Get all available keys from all vendors
+        
+        Returns:
+            dict: Dictionary mapping vendor names to their available keys
         """
-        with self.dbmgr as mgr:
-            return mgr.all_keys()
+        all_keys = {}
+        for vendor in self.vendors:
+            with self.dbmgrs[vendor.name] as mgr:
+                vendor_keys = mgr.all_keys()
+                all_keys[vendor.name] = vendor_keys
+        return all_keys
 
     def __del__(self):
         if hasattr(self, "driver") and self.driver is not None:
             self.driver.quit()
 
 
-def main(from_iter: int | None = None, check_existed_keys_only: bool = False, keywords: list | None = None, languages: list | None = None, check_insuffcient_quota: bool = False):
+def main(from_iter: int | None = None, check_existed_keys_only: bool = False, 
+         check_insuffcient_quota: bool = False, vendor_selection: str | None = None):
     """
-    Main function to scan GitHub for available OpenAI API Keys
+    Main function to scan GitHub for available API Keys from multiple vendors
     """
-    keywords = KEYWORDS.copy() if keywords is None else keywords
-    languages = LANGUAGES.copy() if languages is None else languages
-
-    leakage = APIKeyLeakageScanner("github.db", keywords, languages)
+    factory = VendorFactory()
+    
+    # Get vendor selection
+    if vendor_selection is None:
+        vendor_selection = factory.display_vendor_menu()
+    
+    vendors = factory.get_vendors_for_scanning(vendor_selection)
+    
+    if not vendors:
+        rich.print("[bold red]❌ No valid vendors selected![/bold red]")
+        return
+    
+    rich.print(f"🚀 Starting scan for: [bold green]{', '.join([v.name for v in vendors])}[/bold green]")
+    
+    scanner = MultiVendorAPIKeyScanner(vendors)
 
     if not check_existed_keys_only:
-        leakage.login_to_github()
-        leakage.search(from_iter=from_iter)
+        scanner.login_to_github()
+        scanner.search(from_iter=from_iter)
 
     if check_insuffcient_quota:
-        leakage.update_iq_keys()
+        scanner.update_iq_keys()
 
-    leakage.update_existed_keys()
-    leakage.deduplication()
-    keys = leakage.all_available_keys()
+    scanner.update_existed_keys()
+    scanner.deduplication()
+    
+    all_keys = scanner.get_all_available_keys()
 
-    rich.print(f"🔑 [bold green]Available keys ({len(keys)}):[/bold green]")
-    for key in keys:
-        rich.print(f"[bold green]{key[0]}[/bold green]")
+    # Display results
+    total_keys = sum(len(keys) for keys in all_keys.values())
+    rich.print(f"\n🔑 [bold green]Scan Complete! Total available keys: {total_keys}[/bold green]")
+    
+    for vendor_name, keys in all_keys.items():
+        if keys:
+            rich.print(f"\n📂 [bold cyan]{vendor_name} Keys ({len(keys)}):[/bold cyan]")
+            for key in keys:
+                rich.print(f"  [bold green]{key[0]}[/bold green]")
+        else:
+            rich.print(f"\n📂 [bold yellow]{vendor_name}: No available keys found[/bold yellow]")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Multi-vendor API Key Scanner")
     parser.add_argument("--from-iter", type=int, default=None, help="Start from the specific iteration")
     parser.add_argument(
         "--debug",
@@ -317,18 +433,10 @@ if __name__ == "__main__":
         help="Check and update status of the insuffcient quota keys",
     )
     parser.add_argument(
-        "-k",
-        "--keywords",
-        nargs="+",
-        default=KEYWORDS,
-        help="Keywords to search",
-    )
-    parser.add_argument(
-        "-l",
-        "--languages",
-        nargs="+",
-        default=LANGUAGES,
-        help="Languages to search",
+        "--vendor",
+        type=str,
+        default=None,
+        help="Pre-select vendor (openai, gemini, siliconflow, or all)",
     )
     args = parser.parse_args()
 
@@ -338,7 +446,6 @@ if __name__ == "__main__":
     main(
         from_iter=args.from_iter,
         check_existed_keys_only=args.check_existed_keys_only,
-        keywords=args.keywords,
-        languages=args.languages,
         check_insuffcient_quota=args.check_insuffcient_quota,
+        vendor_selection=args.vendor,
     )

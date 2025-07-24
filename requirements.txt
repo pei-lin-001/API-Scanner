@@ -1,8 +1,15 @@
 # Core dependencies
 selenium>=4.0.0
 tqdm>=4.65.0
-openai>=1.0.0
 rich>=13.0.0
+
+# Vendor-specific dependencies
+# OpenAI (fixed version to avoid httpx compatibility issues)
+openai>=1.55.3
+httpx<0.28.0
+
+# Google Gemini 
+google-generativeai
 
 # Development dependencies
 pylint>=3.0.0
